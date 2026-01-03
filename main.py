@@ -4,8 +4,15 @@ from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import io
 import base64
+import binascii
 
 app = Flask(__name__)
+
+# --- Rota de Saúde (Health Check) ---
+# Adicionada para o Render saber que a API está online e não dar erro nos logs
+@app.route('/')
+def home():
+    return "API de Simulados Online! Envie um POST para /gerar-simulado", 200
 
 def criar_word_prova(dados):
     doc = Document()
@@ -41,14 +48,20 @@ def criar_word_prova(dados):
         img_b64 = item.get('imagem_base64')
         if img_b64:
             try:
+                # Correção de padding se necessário (evita erros comuns de base64)
+                img_b64 = img_b64.strip()
+                missing_padding = len(img_b64) % 4
+                if missing_padding:
+                    img_b64 += '=' * (4 - missing_padding)
+
                 # Decodifica a string Base64 para bytes
                 image_data = base64.b64decode(img_b64)
                 image_stream = io.BytesIO(image_data)
                 
-                # Adiciona ao Word (largura fixa de 3.5 polegadas para não quebrar layout)
+                # Adiciona ao Word (largura fixa de 3.5 polegadas)
                 doc.add_picture(image_stream, width=Inches(3.5))
                 
-                # Centraliza a última imagem adicionada (que está no último parágrafo)
+                # Centraliza a última imagem adicionada
                 last_paragraph = doc.paragraphs[-1] 
                 last_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 
@@ -56,8 +69,7 @@ def criar_word_prova(dados):
                 doc.add_paragraph() 
             except Exception as e:
                 print(f"Erro ao processar imagem da questão {i}: {e}")
-                # Opcional: Adicionar um texto de aviso no doc se a imagem falhar
-                # doc.add_paragraph("[Erro ao carregar imagem]")
+                # Opcional: doc.add_paragraph("[Imagem não carregada]")
 
         # 3. Alternativas
         alts = item.get('alternativas', {})
@@ -79,8 +91,7 @@ def criar_word_prova(dados):
         # Pega a letra correta (ex: 'a') e transforma em maiúscula ('A')
         gabarito_letra = str(item.get('gabarito', '?')).lower()
         
-        # LÓGICA DE OURO: Procura as justificativas em todos os lugares possíveis
-        # O Gemini às vezes manda como 'justificativa_pedagogica', às vezes como 'justificativa_alternativas'
+        # Procura as justificativas em todos os lugares possíveis
         dic_justificativas = item.get('justificativa_pedagogica') or item.get('justificativa_alternativas') or {}
         
         # Pega o texto da alternativa correta
@@ -96,7 +107,7 @@ def criar_word_prova(dados):
         if texto_justificativa:
             # Estilo simples para o comentário
             p2 = doc.add_paragraph(f"Comentário: {texto_justificativa}")
-            p2.paragraph_format.left_indent = Inches(0.3) # Recuo para ficar elegante
+            p2.paragraph_format.left_indent = Inches(0.3) # Recuo
             
         doc.add_paragraph() # Espaço entre itens do gabarito
 
@@ -115,7 +126,7 @@ def gerar_simulado():
             
         arquivo_word = criar_word_prova(dados)
         
-        # Nome do arquivo dinâmico (opcional)
+        # Nome do arquivo dinâmico
         nome_arquivo = f"Simulado_{dados.get('materia', 'Geral')}.docx"
         
         return send_file(
@@ -125,9 +136,7 @@ def gerar_simulado():
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
     except Exception as e:
-        return {"erro": str(e)}, 500
+        return {"erro": f"Erro interno: {str(e)}"}, 500
 
 if __name__ == '__main__':
-    # No Render, a porta é definida pela variável de ambiente PORT, mas o Flask lida com isso.
-    # Rodando localmente ou via gunicorn (padrão do Render)
     app.run(host='0.0.0.0', port=5000)

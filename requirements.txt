@@ -1,8 +1,4 @@
-fastapi
-uvicorn
-pydantic
-python-docx
-matplotlib
 flask
 gunicorn
-python-multipart
+python-docx
+matplotlib

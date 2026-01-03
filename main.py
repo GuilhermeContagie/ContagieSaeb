@@ -8,110 +8,103 @@ import binascii
 
 app = Flask(__name__)
 
-# --- Rota de Saúde (Health Check) ---
-# Adicionada para o Render saber que a API está online e não dar erro nos logs
+# --- Rota de Saúde ---
 @app.route('/')
 def home():
-    return "API de Simulados Online! Envie um POST para /gerar-simulado", 200
+    return "API Online! Envie POST para /gerar-simulado", 200
 
 def criar_word_prova(dados):
     doc = Document()
     
-    # --- TÍTULO DO SIMULADO ---
+    # --- TÍTULO ---
     titulo = dados.get('titulo_simulado', 'Simulado SAEB')
     heading = doc.add_heading(titulo, 0)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Cabeçalho de Identificação
+    # Cabeçalho
     doc.add_paragraph('_' * 70)
-    doc.add_paragraph('Nome: _________________________________________________ Data: ___/___/___')
+    doc.add_paragraph('Nome: _______________________________ Data: ___/___/___')
     doc.add_paragraph('_' * 70)
     doc.add_paragraph()
 
     itens = dados.get('itens', [])
 
-    # --- LOOP DAS QUESTÕES ---
+    # --- QUESTÕES ---
     for i, item in enumerate(itens, 1):
-        # Tenta pegar código ou nível para o título da questão
         codigo = item.get('descritor_codigo', '')
         nivel = item.get('nivel_dificuldade', '')
         info_extra = f" ({codigo} - {nivel})" if codigo or nivel else ""
         
         doc.add_heading(f"QUESTÃO {i} {info_extra}", level=2)
         
-        # 1. Enunciado
+        # Enunciado
         enunciado = item.get('enunciado', '')
         p = doc.add_paragraph(enunciado)
         p.paragraph_format.space_after = Pt(12)
 
-        # 2. Imagem (Tratamento de Base64)
+        # Imagem
         img_b64 = item.get('imagem_base64')
         if img_b64:
             try:
-                # Correção de padding se necessário (evita erros comuns de base64)
                 img_b64 = img_b64.strip()
                 missing_padding = len(img_b64) % 4
                 if missing_padding:
                     img_b64 += '=' * (4 - missing_padding)
 
-                # Decodifica a string Base64 para bytes
                 image_data = base64.b64decode(img_b64)
                 image_stream = io.BytesIO(image_data)
                 
-                # Adiciona ao Word (largura fixa de 3.5 polegadas)
                 doc.add_picture(image_stream, width=Inches(3.5))
-                
-                # Centraliza a última imagem adicionada
-                last_paragraph = doc.paragraphs[-1] 
-                last_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                
-                # Espaço extra após imagem
+                doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
                 doc.add_paragraph() 
             except Exception as e:
-                print(f"Erro ao processar imagem da questão {i}: {e}")
-                # Opcional: doc.add_paragraph("[Imagem não carregada]")
+                print(f"Erro imagem Q{i}: {e}")
 
-        # 3. Alternativas
+        # Alternativas
         alts = item.get('alternativas', {})
-        # Garante a ordem a, b, c, d, e
         for letra in ['a', 'b', 'c', 'd', 'e']:
             texto_alt = alts.get(letra)
             if texto_alt:
                 doc.add_paragraph(f"({letra.upper()}) {texto_alt}")
         
-        doc.add_paragraph('-' * 50) # Separador visual
+        doc.add_paragraph('-' * 50)
 
-    # --- GABARITO COMENTADO (NOVA PÁGINA) ---
+    # --- GABARITO COMENTADO (ATUALIZADO) ---
     doc.add_page_break()
     heading_gab = doc.add_heading('GABARITO COMENTADO', level=1)
     heading_gab.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph()
 
     for i, item in enumerate(itens, 1):
-        # Pega a letra correta (ex: 'a') e transforma em maiúscula ('A')
         gabarito_letra = str(item.get('gabarito', '?')).lower()
         
-        # Procura as justificativas em todos os lugares possíveis
-        dic_justificativas = item.get('justificativa_pedagogica') or item.get('justificativa_alternativas') or {}
-        
-        # Pega o texto da alternativa correta
-        texto_justificativa = dic_justificativas.get(gabarito_letra)
-        
-        # Monta o parágrafo: "Q1: A" em negrito
+        # Título da questão no gabarito
         p = doc.add_paragraph()
-        run = p.add_run(f"Q{i}: {gabarito_letra.upper()}")
+        run = p.add_run(f"Q{i}: Gabarito {gabarito_letra.upper()}")
         run.bold = True
         run.font.size = Pt(12)
         
-        # Se tiver explicação, adiciona na linha de baixo
-        if texto_justificativa:
-            # Estilo simples para o comentário
-            p2 = doc.add_paragraph(f"Comentário: {texto_justificativa}")
-            p2.paragraph_format.left_indent = Inches(0.3) # Recuo
-            
-        doc.add_paragraph() # Espaço entre itens do gabarito
+        # Busca dicionário de justificativas
+        dic_justificativas = item.get('justificativa_pedagogica') or item.get('justificativa_alternativas') or {}
+        
+        # ITERAÇÃO: Lista todas as alternativas (A, B, C, D, E)
+        for letra in ['a', 'b', 'c', 'd', 'e']:
+            texto_just = dic_justificativas.get(letra)
+            if texto_just:
+                # Cria parágrafo indentado para cada justificativa
+                p_just = doc.add_paragraph()
+                p_just.paragraph_format.left_indent = Inches(0.3)
+                p_just.paragraph_format.space_after = Pt(2) # Espaço menor entre elas
+                
+                # Letra em negrito: "(A) "
+                run_l = p_just.add_run(f"({letra.upper()}) ")
+                run_l.bold = True
+                
+                # Texto da explicação
+                p_just.add_run(texto_just)
+                
+        doc.add_paragraph() # Espaço extra entre uma questão e outra
 
-    # --- FINALIZAÇÃO ---
     file_stream = io.BytesIO()
     doc.save(file_stream)
     file_stream.seek(0)
@@ -121,22 +114,15 @@ def criar_word_prova(dados):
 def gerar_simulado():
     try:
         dados = request.json
-        if not dados:
-            return {"erro": "Nenhum dado JSON recebido"}, 400
-            
-        arquivo_word = criar_word_prova(dados)
-        
-        # Nome do arquivo dinâmico
-        nome_arquivo = f"Simulado_{dados.get('materia', 'Geral')}.docx"
-        
+        if not dados: return {"erro": "Sem dados"}, 400
         return send_file(
-            arquivo_word,
+            criar_word_prova(dados),
             as_attachment=True,
-            download_name=nome_arquivo,
+            download_name=f"Simulado_{dados.get('materia','Geral')}.docx",
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
     except Exception as e:
-        return {"erro": f"Erro interno: {str(e)}"}, 500
+        return {"erro": str(e)}, 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

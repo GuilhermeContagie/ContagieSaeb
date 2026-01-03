@@ -1,151 +1,133 @@
-import json
-import base64
-import matplotlib
-matplotlib.use('Agg') # Backend para servidor
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from flask import Flask, request, send_file
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor, Cm
+from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from io import BytesIO
-from fastapi.responses import StreamingResponse
-import traceback # Importante para ver o erro real
+import io
+import base64
 
-app = FastAPI()
+app = Flask(__name__)
 
-class ItemList(BaseModel):
-    itens: List[Dict[str, Any]]
-    titulo_simulado: Optional[str] = "SIMULADO SAEB"
-
-# --- FUNÇÃO MATPLOTLIB (Mantenha a mesma lógica visual anterior) ---
-def gerar_matplotlib(categoria, dados):
-    fig, ax = plt.subplots(figsize=(6, 3.5), dpi=150)
-    ax.set_axis_off()
-    
-    try:
-        if categoria == "GRAFICO_BARRAS":
-            ax.set_axis_on()
-            colors = ['#5DADE2', '#F4D03F', '#AF7AC5', '#EC7063']
-            valores = dados.get('valores', [])
-            labels = dados.get('labels', [])
-            if valores and labels:
-                bars = ax.bar(labels, valores, color=colors[:len(labels)], edgecolor='black')
-                ax.bar_label(bars, padding=3)
-                ax.set_title(dados.get('titulo', ''), fontsize=10, fontweight='bold')
-                ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
-        
-        # ... (Mantenha os outros gráficos: TABELA, RETA, RELOGIO, BLOCOS, GEOMETRIA aqui) ...
-        # Se quiser economizar espaço aqui, copie os blocos 'elif' do código anterior
-        # O erro não está aqui, está na montagem do Word ou Base64.
-        
-        else:
-            ax.text(0.5, 0.5, "Visualização Gerada", ha='center')
-
-    except Exception as e:
-        ax.text(0.5, 0.5, f"Erro visual: {str(e)}", ha='center', color='red', fontsize=8)
-
-    img_buffer = BytesIO()
-    plt.tight_layout()
-    plt.savefig(img_buffer, format='png', bbox_inches='tight')
-    plt.close(fig)
-    img_buffer.seek(0)
-    return img_buffer
-
-# --- FUNÇÃO DE WORD (Com Correção de Base64) ---
-def criar_word_prova(data):
+def criar_word_prova(dados):
     doc = Document()
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'; style.font.size = Pt(11)
+    
+    # --- TÍTULO DO SIMULADO ---
+    titulo = dados.get('titulo_simulado', 'Simulado SAEB')
+    heading = doc.add_heading(titulo, 0)
+    heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Cabeçalho de Identificação
+    doc.add_paragraph('_' * 70)
+    doc.add_paragraph('Nome: _________________________________________________ Data: ___/___/___')
+    doc.add_paragraph('_' * 70)
+    doc.add_paragraph()
 
-    # Título
-    p_head = doc.add_paragraph()
-    p_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run_h = p_head.add_run(str(data.titulo_simulado))
-    run_h.bold = True; run_h.font.size = Pt(14)
-    doc.add_paragraph("_" * 70)
-    doc.add_paragraph("Nome: _________________________________________________ Data: ___/___/___")
-    doc.add_paragraph("_" * 70)
+    itens = dados.get('itens', [])
 
-    for i, item in enumerate(data.itens):
-        # Enunciado
-        p_q = doc.add_paragraph()
-        run_q = p_q.add_run(f"QUESTÃO {i+1} ")
-        run_q.bold = True
-        desc = item.get('descritor_codigo', 'NA')
-        niv = item.get('nivel_dificuldade', '')
-        run_desc = p_q.add_run(f"({desc} - {niv})")
-        run_desc.font.size = Pt(8); run_desc.font.color.rgb = RGBColor(100,100,100)
+    # --- LOOP DAS QUESTÕES ---
+    for i, item in enumerate(itens, 1):
+        # Tenta pegar código ou nível para o título da questão
+        codigo = item.get('descritor_codigo', '')
+        nivel = item.get('nivel_dificuldade', '')
+        info_extra = f" ({codigo} - {nivel})" if codigo or nivel else ""
         
-        doc.add_paragraph(item.get('enunciado', 'Questão sem enunciado'))
-
-        # --- PROCESSAMENTO DE IMAGEM ---
-        tipo_vis = item.get('tipo_visual_categoria', 'NENHUM')
-        img_stream = None
+        doc.add_heading(f"QUESTÃO {i} {info_extra}", level=2)
         
-        # 1. Matplotlib
-        if tipo_vis == 'MATPLOTLIB' and item.get('dados_visual_python'):
+        # 1. Enunciado
+        enunciado = item.get('enunciado', '')
+        p = doc.add_paragraph(enunciado)
+        p.paragraph_format.space_after = Pt(12)
+
+        # 2. Imagem (Tratamento de Base64)
+        img_b64 = item.get('imagem_base64')
+        if img_b64:
             try:
-                img_stream = gerar_matplotlib(tipo_vis, item['dados_visual_python'])
-            except Exception as e:
-                print(f"Erro Matplotlib Q{i}: {e}")
-        
-        # 2. IA Generativa (A CORREÇÃO ESTÁ AQUI)
-        elif tipo_vis == 'IA_GENERATIVA' and item.get('imagem_base64'):
-            try:
-                b64_str = item['imagem_base64']
-                # Limpeza: Se vier com cabeçalho "data:image/...", removemos.
-                if "," in b64_str:
-                    b64_str = b64_str.split(",")[1]
+                # Decodifica a string Base64 para bytes
+                image_data = base64.b64decode(img_b64)
+                image_stream = io.BytesIO(image_data)
                 
-                image_data = base64.b64decode(b64_str)
-                img_stream = BytesIO(image_data)
+                # Adiciona ao Word (largura fixa de 3.5 polegadas para não quebrar layout)
+                doc.add_picture(image_stream, width=Inches(3.5))
+                
+                # Centraliza a última imagem adicionada (que está no último parágrafo)
+                last_paragraph = doc.paragraphs[-1] 
+                last_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                
+                # Espaço extra após imagem
+                doc.add_paragraph() 
             except Exception as e:
-                print(f"Erro Base64 Q{i}: {e}")
-                # Não quebra o código, apenas segue sem imagem
+                print(f"Erro ao processar imagem da questão {i}: {e}")
+                # Opcional: Adicionar um texto de aviso no doc se a imagem falhar
+                # doc.add_paragraph("[Erro ao carregar imagem]")
 
-        if img_stream:
-            try:
-                doc.add_picture(img_stream, width=Inches(3.5))
-                doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
-            except Exception as e:
-                print(f"Erro ao inserir imagem no Word: {e}")
-            doc.add_paragraph("")
-
-        # Alternativas
-        letras = ['a', 'b', 'c', 'd', 'e']
+        # 3. Alternativas
         alts = item.get('alternativas', {})
-        if alts:
-            for l in letras:
-                if l in alts:
-                    doc.add_paragraph(f"({l.upper()}) {alts[l]}")
+        # Garante a ordem a, b, c, d, e
+        for letra in ['a', 'b', 'c', 'd', 'e']:
+            texto_alt = alts.get(letra)
+            if texto_alt:
+                doc.add_paragraph(f"({letra.upper()}) {texto_alt}")
         
-        doc.add_paragraph("-" * 50)
+        doc.add_paragraph('-' * 50) # Separador visual
 
-    # Gabarito
+    # --- GABARITO COMENTADO (NOVA PÁGINA) ---
     doc.add_page_break()
-    doc.add_heading("GABARITO COMENTADO", 0)
-    for i, item in enumerate(data.itens):
-        doc.add_paragraph(f"Q{i+1}: {item.get('gabarito', '').upper()}", style='List Bullet')
+    heading_gab = doc.add_heading('GABARITO COMENTADO', level=1)
+    heading_gab.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph()
+
+    for i, item in enumerate(itens, 1):
+        # Pega a letra correta (ex: 'a') e transforma em maiúscula ('A')
+        gabarito_letra = str(item.get('gabarito', '?')).lower()
         
-    file_stream = BytesIO()
+        # LÓGICA DE OURO: Procura as justificativas em todos os lugares possíveis
+        # O Gemini às vezes manda como 'justificativa_pedagogica', às vezes como 'justificativa_alternativas'
+        dic_justificativas = item.get('justificativa_pedagogica') or item.get('justificativa_alternativas') or {}
+        
+        # Pega o texto da alternativa correta
+        texto_justificativa = dic_justificativas.get(gabarito_letra)
+        
+        # Monta o parágrafo: "Q1: A" em negrito
+        p = doc.add_paragraph()
+        run = p.add_run(f"Q{i}: {gabarito_letra.upper()}")
+        run.bold = True
+        run.font.size = Pt(12)
+        
+        # Se tiver explicação, adiciona na linha de baixo
+        if texto_justificativa:
+            # Estilo simples para o comentário
+            p2 = doc.add_paragraph(f"Comentário: {texto_justificativa}")
+            p2.paragraph_format.left_indent = Inches(0.3) # Recuo para ficar elegante
+            
+        doc.add_paragraph() # Espaço entre itens do gabarito
+
+    # --- FINALIZAÇÃO ---
+    file_stream = io.BytesIO()
     doc.save(file_stream)
     file_stream.seek(0)
     return file_stream
 
-@app.post("/gerar-simulado")
-async def api_endpoint(data: ItemList):
+@app.route('/gerar-simulado', methods=['POST'])
+def gerar_simulado():
     try:
-        arquivo = criar_word_prova(data)
-        return StreamingResponse(
-            arquivo,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": "attachment; filename=simulado_saeb.docx"}
+        dados = request.json
+        if not dados:
+            return {"erro": "Nenhum dado JSON recebido"}, 400
+            
+        arquivo_word = criar_word_prova(dados)
+        
+        # Nome do arquivo dinâmico (opcional)
+        nome_arquivo = f"Simulado_{dados.get('materia', 'Geral')}.docx"
+        
+        return send_file(
+            arquivo_word,
+            as_attachment=True,
+            download_name=nome_arquivo,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
     except Exception as e:
-        # ISSO VAI MOSTRAR O ERRO REAL NO N8N
-        error_msg = traceback.format_exc()
-        print(error_msg) # Aparece no log do Render
-        raise HTTPException(status_code=500, detail=error_msg)
+        return {"erro": str(e)}, 500
+
+if __name__ == '__main__':
+    # No Render, a porta é definida pela variável de ambiente PORT, mas o Flask lida com isso.
+    # Rodando localmente ou via gunicorn (padrão do Render)
+    app.run(host='0.0.0.0', port=5000)

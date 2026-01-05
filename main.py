@@ -21,58 +21,91 @@ def home():
 def desenhar_reta_numerica(dados):
     fig, ax = plt.subplots(figsize=(8, 2))
     
-    # Normalização de chaves (IA vs Python)
-    # A IA pode mandar 'min_valor' ou 'inicio'
+    # 1. Normalização de dados (Aceita sinônimos da IA)
     min_val = dados.get('min_valor') if dados.get('min_valor') is not None else dados.get('inicio', 0)
     max_val = dados.get('max_valor') if dados.get('max_valor') is not None else dados.get('fim', 10)
-    
-    # Intervalo
     intervalo = dados.get('intervalo_principal') or dados.get('incremento_principal') or 1
     
-    # Marcas: pode ser lista simples [10, 20] ou dicionário {"120": "X"}
-    marcados = dados.get('numeros_marcados') or dados.get('marcas_texto') or []
+    # Marcados: Dicionário ou Lista
+    marcados = dados.get('numeros_marcados') or dados.get('marcas_texto') or dados.get('rotulos') or []
     
-    # Configura eixos
+    # Ponto de Destaque (O "X")
+    destaque = dados.get('ponto_destaque')
+    destaque_valor = None
+    destaque_rotulo = "X"
+    destaque_cor = "black"
+
+    if destaque:
+        destaque_valor = destaque.get('valor')
+        destaque_rotulo = destaque.get('rotulo', 'X')
+        destaque_cor = destaque.get('cor', 'red')
+
+    # Configura eixos e ticks
     ax.set_xlim(min_val - intervalo, max_val + intervalo)
     ax.set_ylim(-1, 1)
     
-    # Limpeza visual
+    # Gera os pontos da reta
+    ticks = np.arange(min_val, max_val + intervalo, intervalo)
+    ax.set_xticks(ticks)
+    
+    # --- MODO DETETIVE: ACHA O BURACO DO X ---
+    # Se temos um destaque (X) mas a IA mandou valor NULL, tentamos achar onde ele cabe
+    if destaque and destaque_valor is None:
+        ticks_sem_rotulo = []
+        for t in ticks:
+            key = str(int(t))
+            # Verifica se este tick TEM rótulo no dicionário
+            tem_rotulo = False
+            if isinstance(marcados, dict):
+                tem_rotulo = key in marcados
+            else:
+                tem_rotulo = t in marcados or int(t) in marcados
+            
+            if not tem_rotulo:
+                ticks_sem_rotulo.append(t)
+        
+        # Se achamos exatamente UM buraco (ex: falta só o 110), colocamos o X lá
+        if len(ticks_sem_rotulo) == 1:
+            destaque_valor = ticks_sem_rotulo[0]
+
+    # Gera os Rótulos do Eixo X (Números normais)
+    labels = []
+    for t in ticks:
+        key = str(int(t))
+        label_text = ""
+        
+        if isinstance(marcados, dict):
+            if key in marcados: label_text = str(marcados[key])
+        else:
+            if t in marcados or int(t) in marcados: label_text = str(int(t))
+            
+        labels.append(label_text)
+            
+    ax.set_xticklabels(labels, fontsize=12, fontweight='bold')
+
+    # Desenha o Destaque (X) por cima, se tivermos um valor
+    if destaque_valor is not None:
+        ax.annotate(destaque_rotulo, 
+                    xy=(destaque_valor, 0), 
+                    xytext=(0, 15), # 15 pontos acima da linha
+                    textcoords="offset points", 
+                    ha='center', va='bottom',
+                    color=destaque_cor, fontsize=14, fontweight='bold')
+        
+        # Opcional: Marca um pontinho vermelho na reta
+        ax.plot(destaque_valor, 0, '|', color=destaque_cor, markeredgewidth=2, markersize=10)
+
+    # Limpeza visual (remove caixas)
     ax.spines['left'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
     ax.spines['bottom'].set_position('center')
     ax.yaxis.set_visible(False)
     
-    # Ticks
-    ticks = np.arange(min_val, max_val + intervalo, intervalo)
-    ax.set_xticks(ticks)
-    
-    # Rótulos Inteligentes
-    labels = []
-    if isinstance(marcados, dict):
-        # Se for dicionário (ex: {"120": "X"}), usa os valores do dict
-        for t in ticks:
-            # Converte t para inteiro e string para buscar na chave
-            key = str(int(t))
-            if key in marcados:
-                labels.append(marcados[key]) # Põe o "X" ou o número
-            else:
-                labels.append('')
-    else:
-        # Se for lista (ex: [10, 20, 30])
-        for t in ticks:
-            if t in marcados:
-                labels.append(str(int(t)))
-            else:
-                labels.append('')
-            
-    ax.set_xticklabels(labels, fontsize=12, fontweight='bold')
-    
     # Setas nas pontas
     ax.plot(1, 0, ">k", transform=ax.get_yaxis_transform(), clip_on=False)
     ax.plot(0, 0, "<k", transform=ax.get_yaxis_transform(), clip_on=False)
 
-    # Buffer
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png', bbox_inches='tight', dpi=100)
     plt.close(fig)
@@ -117,7 +150,6 @@ def criar_tabela_word(doc, dados):
     tabela = doc.add_table(rows=1, cols=len(colunas))
     tabela.style = 'Table Grid'
     
-    # Cabeçalho
     hdr_cells = tabela.rows[0].cells
     for i, col_name in enumerate(colunas):
         hdr_cells[i].text = str(col_name)
@@ -125,7 +157,6 @@ def criar_tabela_word(doc, dados):
             for run in paragraph.runs:
                 run.font.bold = True
 
-    # Dados
     for linha in linhas:
         row_cells = tabela.add_row().cells
         for i, valor in enumerate(linha):
@@ -133,17 +164,15 @@ def criar_tabela_word(doc, dados):
             
     doc.add_paragraph()
 
-# --- FUNÇÃO PRINCIPAL GERAÇÃO WORD ---
+# --- FUNÇÃO PRINCIPAL ---
 
 def criar_word_prova(dados):
     doc = Document()
     
-    # Título
     titulo = dados.get('titulo_simulado', 'Simulado SAEB')
     heading = doc.add_heading(titulo, 0)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Cabeçalho
     doc.add_paragraph('_' * 70)
     doc.add_paragraph('Nome: _________________________________________________ Data: ___/___/___')
     doc.add_paragraph('_' * 70)
@@ -162,12 +191,11 @@ def criar_word_prova(dados):
         p = doc.add_paragraph(enunciado)
         p.paragraph_format.space_after = Pt(12)
 
-        # --- LÓGICA DE DECISÃO VISUAL ---
+        # --- IMAGENS ---
         img_b64 = item.get('imagem_base64')
         dados_visuais = item.get('dados_visual_python')
         stream_para_inserir = None
         
-        # 1. Tenta Imagem Base64 (Pollinations)
         if img_b64:
             try:
                 img_b64 = img_b64.strip()
@@ -177,11 +205,8 @@ def criar_word_prova(dados):
             except Exception as e:
                 print(f"Erro base64 Q{i}: {e}")
 
-        # 2. Se não tem imagem, tenta Matplotlib/Tabela
         elif dados_visuais:
-            # Normaliza o tipo (pega 'tipo_grafico' ou 'tipo')
             tipo = str(dados_visuais.get('tipo_grafico') or dados_visuais.get('tipo') or '').lower()
-            
             try:
                 if 'reta' in tipo or 'numerica' in tipo:
                     stream_para_inserir = desenhar_reta_numerica(dados_visuais)
@@ -192,7 +217,6 @@ def criar_word_prova(dados):
             except Exception as e:
                 print(f"Erro matplotlib Q{i}: {e}")
 
-        # Insere a imagem gerada (se houver)
         if stream_para_inserir:
             doc.add_picture(stream_para_inserir, width=Inches(3.5))
             doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER

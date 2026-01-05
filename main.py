@@ -1,13 +1,11 @@
 from flask import Flask, request, send_file
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
 import io
 import base64
 import matplotlib
-matplotlib.use('Agg') # Importante para rodar no servidor sem monitor
+matplotlib.use('Agg') # Backend para servidor (Render)
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -18,9 +16,10 @@ app = Flask(__name__)
 def home():
     return "API Online! Envie POST para /gerar-simulado", 200
 
-# --- FUNÇÕES DE DESENHO MATEMÁTICO ---
+# --- FUNÇÕES DE DESENHO (MATPLOTLIB) ---
 
 def desenhar_reta_numerica(dados):
+    # Cria a figura
     fig, ax = plt.subplots(figsize=(8, 2))
     
     min_val = dados.get('min_valor', 0)
@@ -28,36 +27,35 @@ def desenhar_reta_numerica(dados):
     intervalo = dados.get('intervalo_principal', 1)
     marcados = dados.get('numeros_marcados', [])
     
-    # Configura o eixo X
+    # Configura eixos
     ax.set_xlim(min_val - intervalo, max_val + intervalo)
     ax.set_ylim(-1, 1)
     
-    # Remove eixos Y e bordas desnecessárias
+    # Remove bordas
     ax.spines['left'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
     ax.spines['bottom'].set_position('center')
     ax.yaxis.set_visible(False)
     
-    # Cria os ticks (tracinhos)
+    # Ticks e Labels
     ticks = np.arange(min_val, max_val + intervalo, intervalo)
     ax.set_xticks(ticks)
     
-    # Formata os rótulos (labels)
     labels = []
     for t in ticks:
         if t in marcados:
             labels.append(str(int(t)))
         else:
-            labels.append('') # Deixa vazio se não for para marcar
+            labels.append('')
             
     ax.set_xticklabels(labels, fontsize=12, fontweight='bold')
     
-    # Adiciona setas nas pontas (estilo reta infinita)
+    # Setas nas pontas
     ax.plot(max_val + intervalo, 0, ">k", transform=ax.get_yaxis_transform(), clip_on=False)
     ax.plot(min_val - intervalo, 0, "<k", transform=ax.get_yaxis_transform(), clip_on=False)
 
-    # Salva em buffer
+    # Salva imagem
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png', bbox_inches='tight', dpi=100)
     plt.close(fig)
@@ -71,7 +69,6 @@ def desenhar_grafico_barras(dados):
     valores = dados.get('valores', [])
     titulo = dados.get('titulo', '')
     
-    # Cores amigáveis para crianças
     cores = ['#FF9999', '#66B2FF', '#99FF99', '#FFCC99', '#c2c2f0']
     
     bars = ax.bar(categorias, valores, color=cores[:len(categorias)])
@@ -79,12 +76,12 @@ def desenhar_grafico_barras(dados):
     ax.set_title(titulo, fontsize=14)
     ax.set_ylabel('Quantidade')
     
-    # Adiciona o valor em cima da barra
+    # Valores nas barras
     for bar in bars:
         height = bar.get_height()
         ax.annotate(f'{height}',
                     xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3),  # 3 points vertical offset
+                    xytext=(0, 3),
                     textcoords="offset points",
                     ha='center', va='bottom')
 
@@ -101,13 +98,12 @@ def criar_tabela_word(doc, dados):
     if not colunas or not linhas: return
 
     tabela = doc.add_table(rows=1, cols=len(colunas))
-    tabela.style = 'Table Grid' # Estilo com bordas
+    tabela.style = 'Table Grid'
     
     # Cabeçalho
     hdr_cells = tabela.rows[0].cells
     for i, col_name in enumerate(colunas):
         hdr_cells[i].text = str(col_name)
-        # Opcional: Negrito no cabeçalho
         for paragraph in hdr_cells[i].paragraphs:
             for run in paragraph.runs:
                 run.font.bold = True
@@ -118,9 +114,9 @@ def criar_tabela_word(doc, dados):
         for i, valor in enumerate(linha):
             row_cells[i].text = str(valor)
             
-    doc.add_paragraph() # Espaço após tabela
+    doc.add_paragraph()
 
-# --- FUNÇÃO PRINCIPAL ---
+# --- FUNÇÃO GERAÇÃO DO WORD ---
 
 def criar_word_prova(dados):
     doc = Document()
@@ -130,7 +126,7 @@ def criar_word_prova(dados):
     heading = doc.add_heading(titulo, 0)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Cabeçalho Aluno
+    # Cabeçalho
     doc.add_paragraph('_' * 70)
     doc.add_paragraph('Nome: _________________________________________________ Data: ___/___/___')
     doc.add_paragraph('_' * 70)
@@ -149,13 +145,9 @@ def criar_word_prova(dados):
         p = doc.add_paragraph(enunciado)
         p.paragraph_format.space_after = Pt(12)
 
-        # --- LÓGICA VISUAL INTELIGENTE ---
-        # 1. Tenta Imagem Gerada (Pollinations/IA)
+        # --- IMAGENS E GRÁFICOS ---
         img_b64 = item.get('imagem_base64')
-        
-        # 2. Se não tiver imagem, tenta Dados Matemáticos (Matplotlib)
         dados_visuais = item.get('dados_visual_python')
-        
         stream_para_inserir = None
         
         if img_b64:
@@ -175,11 +167,10 @@ def criar_word_prova(dados):
                 elif 'barras' in tipo or 'colunas' in tipo:
                     stream_para_inserir = desenhar_grafico_barras(dados_visuais)
                 elif 'tabela' in tipo:
-                    criar_tabela_word(doc, dados_visuais) # Tabela é direto no doc, não retorna imagem
+                    criar_tabela_word(doc, dados_visuais)
             except Exception as e:
                 print(f"Erro matplotlib Q{i}: {e}")
 
-        # Se gerou alguma imagem (IA ou Matplotlib), insere agora
         if stream_para_inserir:
             doc.add_picture(stream_para_inserir, width=Inches(3.5))
             doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -194,7 +185,7 @@ def criar_word_prova(dados):
         
         doc.add_paragraph('-' * 50)
 
-    # --- GABARITO COMENTADO ---
+    # --- GABARITO ---
     doc.add_page_break()
     heading_gab = doc.add_heading('GABARITO COMENTADO', level=1)
     heading_gab.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -208,10 +199,10 @@ def criar_word_prova(dados):
         run.bold = True
         run.font.size = Pt(12)
         
-        dic_justificativas = item.get('justificativa_pedagogica') or item.get('justificativa_alternativas') or {}
+        dic_just = item.get('justificativa_pedagogica') or item.get('justificativa_alternativas') or {}
         
         for letra in ['a', 'b', 'c', 'd', 'e']:
-            texto_just = dic_justificativas.get(letra)
+            texto_just = dic_just.get(letra)
             if texto_just:
                 p_just = doc.add_paragraph()
                 p_just.paragraph_format.left_indent = Inches(0.3)
@@ -219,7 +210,7 @@ def criar_word_prova(dados):
                 run_l = p_just.add_run(f"({letra.upper()}) ")
                 run_l.bold = True
                 p_just.add_run(texto_just)
-                
+        
         doc.add_paragraph()
 
     file_stream = io.BytesIO()
@@ -231,18 +222,23 @@ def criar_word_prova(dados):
 def gerar_simulado():
     try:
         dados = request.json
-        if not dados: return {"erro": "Sem dados"}, 400
+        if not dados:
+            return {"erro": "Sem dados"}, 400
+            
+        # Gera o arquivo Word
+        arquivo_word = criar_word_prova(dados)
+        
+        # Define o nome do arquivo
+        materia = dados.get('materia', 'Geral')
+        nome_arquivo = f"Simulado_{materia}.docx"
+        
+        # Envia o arquivo
         return send_file(
-            criar_word_prova(dados),
+            arquivo_word,
             as_attachment=True,
-            download_name=f"Simulado_{dados.get('materia','Geral')}.docx",
+            download_name=nome_arquivo,
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
-    except Exception as e:
-        return {"erro": str(e)}, 500
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
     except Exception as e:
         return {"erro": str(e)}, 500
 

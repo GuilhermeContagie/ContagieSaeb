@@ -5,7 +5,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import io
 import base64
 import matplotlib
-matplotlib.use('Agg') # Backend para servidor (Render)
+matplotlib.use('Agg') # Backend para servidor sem monitor
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -16,46 +16,63 @@ app = Flask(__name__)
 def home():
     return "API Online! Envie POST para /gerar-simulado", 200
 
-# --- FUNÇÕES DE DESENHO (MATPLOTLIB) ---
+# --- FUNÇÕES DE DESENHO INTELIGENTES ---
 
 def desenhar_reta_numerica(dados):
-    # Cria a figura
     fig, ax = plt.subplots(figsize=(8, 2))
     
-    min_val = dados.get('min_valor', 0)
-    max_val = dados.get('max_valor', 10)
-    intervalo = dados.get('intervalo_principal', 1)
-    marcados = dados.get('numeros_marcados', [])
+    # Normalização de chaves (IA vs Python)
+    # A IA pode mandar 'min_valor' ou 'inicio'
+    min_val = dados.get('min_valor') if dados.get('min_valor') is not None else dados.get('inicio', 0)
+    max_val = dados.get('max_valor') if dados.get('max_valor') is not None else dados.get('fim', 10)
+    
+    # Intervalo
+    intervalo = dados.get('intervalo_principal') or dados.get('incremento_principal') or 1
+    
+    # Marcas: pode ser lista simples [10, 20] ou dicionário {"120": "X"}
+    marcados = dados.get('numeros_marcados') or dados.get('marcas_texto') or []
     
     # Configura eixos
     ax.set_xlim(min_val - intervalo, max_val + intervalo)
     ax.set_ylim(-1, 1)
     
-    # Remove bordas
+    # Limpeza visual
     ax.spines['left'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
     ax.spines['bottom'].set_position('center')
     ax.yaxis.set_visible(False)
     
-    # Ticks e Labels
+    # Ticks
     ticks = np.arange(min_val, max_val + intervalo, intervalo)
     ax.set_xticks(ticks)
     
+    # Rótulos Inteligentes
     labels = []
-    for t in ticks:
-        if t in marcados:
-            labels.append(str(int(t)))
-        else:
-            labels.append('')
+    if isinstance(marcados, dict):
+        # Se for dicionário (ex: {"120": "X"}), usa os valores do dict
+        for t in ticks:
+            # Converte t para inteiro e string para buscar na chave
+            key = str(int(t))
+            if key in marcados:
+                labels.append(marcados[key]) # Põe o "X" ou o número
+            else:
+                labels.append('')
+    else:
+        # Se for lista (ex: [10, 20, 30])
+        for t in ticks:
+            if t in marcados:
+                labels.append(str(int(t)))
+            else:
+                labels.append('')
             
     ax.set_xticklabels(labels, fontsize=12, fontweight='bold')
     
     # Setas nas pontas
-    ax.plot(max_val + intervalo, 0, ">k", transform=ax.get_yaxis_transform(), clip_on=False)
-    ax.plot(min_val - intervalo, 0, "<k", transform=ax.get_yaxis_transform(), clip_on=False)
+    ax.plot(1, 0, ">k", transform=ax.get_yaxis_transform(), clip_on=False)
+    ax.plot(0, 0, "<k", transform=ax.get_yaxis_transform(), clip_on=False)
 
-    # Salva imagem
+    # Buffer
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png', bbox_inches='tight', dpi=100)
     plt.close(fig)
@@ -65,25 +82,25 @@ def desenhar_reta_numerica(dados):
 def desenhar_grafico_barras(dados):
     fig, ax = plt.subplots(figsize=(6, 4))
     
-    categorias = dados.get('categorias', []) or dados.get('titulos', [])
-    valores = dados.get('valores', [])
+    categorias = dados.get('categorias') or dados.get('titulos') or []
+    valores = dados.get('valores') or []
     titulo = dados.get('titulo', '')
     
     cores = ['#FF9999', '#66B2FF', '#99FF99', '#FFCC99', '#c2c2f0']
     
-    bars = ax.bar(categorias, valores, color=cores[:len(categorias)])
-    
-    ax.set_title(titulo, fontsize=14)
-    ax.set_ylabel('Quantidade')
-    
-    # Valores nas barras
-    for bar in bars:
-        height = bar.get_height()
-        ax.annotate(f'{height}',
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3),
-                    textcoords="offset points",
-                    ha='center', va='bottom')
+    if categorias and valores:
+        bars = ax.bar(categorias, valores, color=cores[:len(categorias)])
+        
+        ax.set_title(titulo, fontsize=14)
+        ax.set_ylabel('Quantidade')
+        
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{height}',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3),
+                        textcoords="offset points",
+                        ha='center', va='bottom')
 
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png', bbox_inches='tight', dpi=100)
@@ -116,7 +133,7 @@ def criar_tabela_word(doc, dados):
             
     doc.add_paragraph()
 
-# --- FUNÇÃO GERAÇÃO DO WORD ---
+# --- FUNÇÃO PRINCIPAL GERAÇÃO WORD ---
 
 def criar_word_prova(dados):
     doc = Document()
@@ -145,11 +162,12 @@ def criar_word_prova(dados):
         p = doc.add_paragraph(enunciado)
         p.paragraph_format.space_after = Pt(12)
 
-        # --- IMAGENS E GRÁFICOS ---
+        # --- LÓGICA DE DECISÃO VISUAL ---
         img_b64 = item.get('imagem_base64')
         dados_visuais = item.get('dados_visual_python')
         stream_para_inserir = None
         
+        # 1. Tenta Imagem Base64 (Pollinations)
         if img_b64:
             try:
                 img_b64 = img_b64.strip()
@@ -159,8 +177,11 @@ def criar_word_prova(dados):
             except Exception as e:
                 print(f"Erro base64 Q{i}: {e}")
 
+        # 2. Se não tem imagem, tenta Matplotlib/Tabela
         elif dados_visuais:
-            tipo = dados_visuais.get('tipo_grafico', '').lower()
+            # Normaliza o tipo (pega 'tipo_grafico' ou 'tipo')
+            tipo = str(dados_visuais.get('tipo_grafico') or dados_visuais.get('tipo') or '').lower()
+            
             try:
                 if 'reta' in tipo or 'numerica' in tipo:
                     stream_para_inserir = desenhar_reta_numerica(dados_visuais)
@@ -171,6 +192,7 @@ def criar_word_prova(dados):
             except Exception as e:
                 print(f"Erro matplotlib Q{i}: {e}")
 
+        # Insere a imagem gerada (se houver)
         if stream_para_inserir:
             doc.add_picture(stream_para_inserir, width=Inches(3.5))
             doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -225,18 +247,13 @@ def gerar_simulado():
         if not dados:
             return {"erro": "Sem dados"}, 400
             
-        # Gera o arquivo Word
-        arquivo_word = criar_word_prova(dados)
-        
-        # Define o nome do arquivo
+        arquivo = criar_word_prova(dados)
         materia = dados.get('materia', 'Geral')
-        nome_arquivo = f"Simulado_{materia}.docx"
         
-        # Envia o arquivo
         return send_file(
-            arquivo_word,
+            arquivo,
             as_attachment=True,
-            download_name=nome_arquivo,
+            download_name=f"Simulado_{materia}.docx",
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
     except Exception as e:

@@ -5,7 +5,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import io
 import base64
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg') # Backend para servidor
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -15,12 +15,47 @@ app = Flask(__name__)
 def home():
     return "API Online! Envie POST para /gerar-simulado", 200
 
-# ... (Funções de desenho: desenhar_reta_numerica, desenhar_grafico_barras, criar_tabela_word permanecem iguais) ...
+# --- FUNÇÕES DE APOIO PARA GRÁFICOS (MATPLOTLIB) ---
+
+def desenhar_reta_numerica(dados):
+    fig, ax = plt.subplots(figsize=(8, 2))
+    min_val = dados.get('min_valor', dados.get('inicio', 0))
+    max_val = dados.get('max_valor', dados.get('fim', 10))
+    intervalo = dados.get('intervalo_principal', 1)
+    marcados = dados.get('numeros_marcados', [])
+    
+    ax.set_xlim(min_val - intervalo, max_val + intervalo)
+    ax.set_ylim(-1, 1)
+    ticks = np.arange(min_val, max_val + intervalo, intervalo)
+    ax.set_xticks(ticks)
+    
+    labels = [str(int(t)) if t in marcados else "" for t in ticks]
+    ax.set_xticklabels(labels, fontsize=12, fontweight='bold')
+
+    destaque = dados.get('ponto_destaque')
+    if destaque and destaque.get('valor') is not None:
+        ax.annotate(destaque.get('rotulo', 'X'), xy=(destaque['valor'], 0), xytext=(0, 15),
+                    textcoords="offset points", ha='center', color=destaque.get('cor', 'red'), 
+                    fontsize=14, fontweight='bold')
+
+    ax.spines['left'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['bottom'].set_position('center')
+    ax.yaxis.set_visible(False)
+    
+    img_buffer = io.BytesIO()
+    plt.savefig(img_buffer, format='png', bbox_inches='tight', dpi=100)
+    plt.close(fig)
+    img_buffer.seek(0)
+    return img_buffer
+
+# --- FUNÇÃO PRINCIPAL DE GERAÇÃO DO DOCUMENTO ---
 
 def criar_word_prova(dados):
     doc = Document()
     
-    # Título do Simulado
+    # Cabeçalho do Simulado
     titulo = dados.get('titulo_simulado', 'Simulado SAEB')
     heading = doc.add_heading(titulo, 0)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -30,58 +65,48 @@ def criar_word_prova(dados):
     doc.add_paragraph('_' * 70)
     doc.add_paragraph()
 
+    # Obtém a lista de itens do JSON
     itens = dados.get('itens', [])
 
-    # LOOP PRINCIPAL: Processa cada item do JSON como uma unidade única
     for i, item in enumerate(itens, 1):
+        # 1. Identificação da Questão
         codigo = item.get('descritor_codigo', 'BNCC')
-        nivel = item.get('nivel_dificuldade', 'N/A')
-        
-        # 1. Cabeçalho da Questão
+        nivel = item.get('nivel_dificuldade', '')
         doc.add_heading(f"QUESTÃO {i} ({codigo} - {nivel})", level=2)
         
-        # 2. Enunciado (Safeguard: se não houver texto, avisa no Word)
-        enunciado = item.get('enunciado')
-        if not enunciado:
-            enunciado = "[AVISO: Enunciado não encontrado no sistema]"
-            
+        # 2. Enunciado (Processado estritamente dentro do loop do item atual)
+        enunciado = item.get('enunciado', '[Texto da questão não disponível]')
         p = doc.add_paragraph(enunciado)
         p.paragraph_format.space_after = Pt(12)
 
-        # 3. Processamento de Imagens/Gráficos (Sincronizado com o item atual)
+        # 3. Imagem ou Gráfico (Sincronizado com o item atual)
         img_b64 = item.get('imagem_base64')
         dados_visuais = item.get('dados_visual_python')
         stream_para_inserir = None
         
         if img_b64:
             try:
-                # Limpeza e correção de padding do Base64
-                img_b64 = img_b64.strip().replace("data:image/png;base64,", "").replace("data:image/jpeg;base64,", "")
+                # Limpa o cabeçalho base64 se existir
+                if "," in img_b64:
+                    img_b64 = img_b64.split(",")[1]
+                
+                # Correção de padding
+                img_b64 = img_b64.strip()
                 missing_padding = len(img_b64) % 4
-                if missing_padding: img_b64 += '=' * (4 - missing_padding)
+                if missing_padding:
+                    img_b64 += '=' * (4 - missing_padding)
+                
                 stream_para_inserir = io.BytesIO(base64.b64decode(img_b64))
             except Exception as e:
-                doc.add_paragraph(f"(Erro ao carregar imagem da questão: {e})")
-
-        elif dados_visuais:
-            tipo = str(dados_visuais.get('tipo_grafico') or dados_visuais.get('tipo') or '').lower()
-            try:
-                if 'reta' in tipo or 'numerica' in tipo:
-                    stream_para_inserir = desenhar_reta_numerica(dados_visuais)
-                elif 'barras' in tipo or 'colunas' in tipo:
-                    stream_para_inserir = desenhar_grafico_barras(dados_visuais)
-                elif 'tabela' in tipo:
-                    criar_tabela_word(doc, dados_visuais)
-            except Exception:
-                pass
+                print(f"Erro ao processar imagem Q{i}: {e}")
 
         if stream_para_inserir:
-            doc.add_picture(stream_para_inserir, width=Inches(3.8))
+            doc.add_picture(stream_para_inserir, width=Inches(3.5))
             last_p = doc.paragraphs[-1]
             last_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             doc.add_paragraph()
 
-        # 4. Alternativas (Busca dentro do objeto 'item' atual)
+        # 4. Alternativas
         alts = item.get('alternativas', {})
         for letra in ['a', 'b', 'c', 'd']:
             texto_alt = alts.get(letra)
@@ -90,7 +115,7 @@ def criar_word_prova(dados):
         
         doc.add_paragraph('-' * 50)
 
-    # --- GABARITO COMENTADO ---
+    # --- PÁGINA DE GABARITO ---
     doc.add_page_break()
     heading_gab = doc.add_heading('GABARITO COMENTADO', level=1)
     heading_gab.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -102,7 +127,7 @@ def criar_word_prova(dados):
         run = p.add_run(f"Q{i}: Gabarito {gabarito_letra}")
         run.bold = True
         
-        # Tenta buscar justificativas em múltiplos formatos possíveis
+        # Suporta ambos os nomes de campos de justificativa
         dic_just = item.get('justificativa_alternativas') or item.get('justificativa_pedagogica') or {}
         
         for letra in ['a', 'b', 'c', 'd']:
@@ -125,15 +150,16 @@ def criar_word_prova(dados):
 def gerar_simulado():
     try:
         dados = request.json
-        if not dados: return {"erro": "Sem dados"}, 400
+        if not dados:
+            return {"erro": "Nenhum dado recebido"}, 400
             
         arquivo = criar_word_prova(dados)
-        materia_nome = dados.get('materia', 'Geral').replace(" ", "_")
+        materia = dados.get('materia', 'Geral').replace(" ", "_")
         
         return send_file(
             arquivo,
             as_attachment=True,
-            download_name=f"Simulado_{materia_nome}.docx",
+            download_name=f"Simulado_{materia}.docx",
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
     except Exception as e:
